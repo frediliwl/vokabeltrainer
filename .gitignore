@@ -1,0 +1,4 @@
+# Nur App-Dateien deployen, keine Dev-Tools
+make_icons.py
+sync_from_obsidian.py
+.DS_Store
