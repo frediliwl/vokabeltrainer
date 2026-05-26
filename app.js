@@ -33,20 +33,40 @@ let answered = false;
 function loadState() {
   try {
     const raw = localStorage.getItem("vokabeltrainer-state");
-    if (raw) return JSON.parse(raw);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      // Migration: alte Struktur (single box) → dual tracks
+      if (parsed.vocab && parsed.vocab.length > 0 && !parsed.vocab[0].deIt) {
+        parsed.vocab = parsed.vocab.map(v => migrateCard(v));
+      }
+      return parsed;
+    }
   } catch (e) { console.warn("State-Load fehlgeschlagen:", e); }
   return {
     vocab: SAMPLE_VOCAB.map((v, i) => ({
       id: "v" + i + "-" + Date.now(),
       de: v.de,
       it: v.it,
-      box: 1,
-      nextDue: todayISO(),
-      created: todayISO(),
-      stats: { correct: 0, wrong: 0 }
+      deIt: { box: 1, nextDue: todayISO(), correct: 0, wrong: 0 },
+      itDe: { box: 1, nextDue: todayISO(), correct: 0, wrong: 0 },
+      created: todayISO()
     })),
     mode: "de-it",
     lastUsed: todayISO()
+  };
+}
+
+// Migration von alter Struktur (single box/nextDue) zu dual tracks
+function migrateCard(v) {
+  if (v.deIt) return v; // schon migriert
+  const track = { box: v.box || 1, nextDue: v.nextDue || todayISO(), correct: v.stats?.correct || 0, wrong: v.stats?.wrong || 0 };
+  return {
+    id: v.id,
+    de: v.de,
+    it: v.it,
+    deIt: { ...track },
+    itDe: { box: 1, nextDue: todayISO(), correct: 0, wrong: 0 },
+    created: v.created || todayISO()
   };
 }
 
@@ -61,7 +81,14 @@ function addDays(iso, days) {
   d.setDate(d.getDate() + days);
   return d.toISOString().split("T")[0];
 }
-function isDue(card) { return card.nextDue <= todayISO(); }
+function isDue(card) {
+  const track = currentMode === "de-it" ? card.deIt : card.itDe;
+  return track.nextDue <= todayISO();
+}
+
+function getTrack(card) {
+  return currentMode === "de-it" ? card.deIt : card.itDe;
+}
 
 // ============================================================
 // Normalisierung (für Antwort-Vergleich)
@@ -90,21 +117,27 @@ function answerMatches(input, expected) {
 // Leitner-Logik
 // ============================================================
 function promoteCard(card) {
-  card.box = Math.min(card.box + 1, LEITNER_INTERVALS.length);
-  card.nextDue = addDays(todayISO(), LEITNER_INTERVALS[card.box - 1]);
-  card.stats.correct++;
+  const track = getTrack(card);
+  track.box = Math.min(track.box + 1, LEITNER_INTERVALS.length);
+  track.nextDue = addDays(todayISO(), LEITNER_INTERVALS[track.box - 1]);
+  track.correct++;
 }
 function demoteCard(card) {
-  card.box = 1;
-  card.nextDue = todayISO();
-  card.stats.wrong++;
+  const track = getTrack(card);
+  track.box = 1;
+  track.nextDue = todayISO();
+  track.wrong++;
 }
 
 function pickNextCard() {
   const due = state.vocab.filter(isDue);
   if (due.length === 0) return null;
   // Niedrigere Box zuerst, innerhalb gleicher Box zufällig
-  due.sort((a, b) => a.box - b.box || Math.random() - 0.5);
+  due.sort((a, b) => {
+    const aBox = getTrack(a).box;
+    const bBox = getTrack(b).box;
+    return aBox - bBox || Math.random() - 0.5;
+  });
   return due[0];
 }
 
@@ -117,7 +150,7 @@ function renderTrain() {
   const total = state.vocab.length;
 
   // Stats-Boxen
-  const counts = [1, 2, 3, 4, 5].map(b => state.vocab.filter(v => v.box === b).length);
+  const counts = [1, 2, 3, 4, 5].map(b => state.vocab.filter(v => getTrack(v).box === b).length);
   const dueCount = state.vocab.filter(isDue).length;
 
   let html = '<div class="stats">';
@@ -160,7 +193,7 @@ function renderTrain() {
   const answerLabel = promptIsDE ? "Italienisch" : "Deutsch";
 
   html += `<div class="card">
-    <div class="prompt-label">${promptLabel} (Box ${currentCard.box})</div>
+    <div class="prompt-label">${promptLabel} (Box ${getTrack(currentCard).box})</div>
     <div class="prompt-word">${escapeHtml(promptWord)}</div>
     <input type="text" id="answer-input" placeholder="${answerLabel} eingeben..." autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false">
     <div id="feedback" class="feedback empty">&nbsp;</div>
@@ -202,7 +235,7 @@ function checkAnswer(expected) {
   if (answerMatches(value, expected)) {
     promoteCard(currentCard);
     fb.className = "feedback correct";
-    fb.innerHTML = `✓ Richtig! <span class="correct-answer">→ Box ${currentCard.box}</span>`;
+    fb.innerHTML = `✓ Richtig! <span class="correct-answer">→ Box ${getTrack(currentCard).box}</span>`;
   } else {
     demoteCard(currentCard);
     fb.className = "feedback wrong";
@@ -290,13 +323,13 @@ function renderList() {
     !search || v.de.toLowerCase().includes(search) || v.it.toLowerCase().includes(search)
   );
 
-  // Sortierung: Box aufsteigend, innerhalb alphabetisch
-  filtered.sort((a, b) => a.box - b.box || a.de.localeCompare(b.de));
+  // Sortierung: niedrigste Box (DE→IT) aufsteigend, innerhalb alphabetisch
+  filtered.sort((a, b) => a.deIt.box - b.deIt.box || a.de.localeCompare(b.de));
 
   html += `<ul class="vocab-list">`;
   for (const v of filtered) {
     html += `<li class="vocab-item">
-      <span class="box-badge">${v.box}</span>
+      <span class="box-badge" title="DE→IT / IT→DE">${v.deIt.box}|${v.itDe.box}</span>
       <div class="words">
         <div class="de">${escapeHtml(v.de)}</div>
         <div class="it">${escapeHtml(v.it)}</div>
@@ -400,10 +433,9 @@ function addVocab(de, it, save = true) {
     state.vocab.push({
       id: "v-" + Date.now() + "-" + Math.random().toString(36).slice(2, 7),
       de, it,
-      box: 1,
-      nextDue: todayISO(),
-      created: todayISO(),
-      stats: { correct: 0, wrong: 0 }
+      deIt: { box: 1, nextDue: todayISO(), correct: 0, wrong: 0 },
+      itDe: { box: 1, nextDue: todayISO(), correct: 0, wrong: 0 },
+      created: todayISO()
     });
   }
   if (save) saveState();
@@ -415,8 +447,8 @@ function addVocab(de, it, save = true) {
 function renderSettings() {
   const view = document.getElementById("view-settings");
   const total = state.vocab.length;
-  const correct = state.vocab.reduce((s, v) => s + v.stats.correct, 0);
-  const wrong = state.vocab.reduce((s, v) => s + v.stats.wrong, 0);
+  const correct = state.vocab.reduce((s, v) => s + v.deIt.correct + v.itDe.correct, 0);
+  const wrong = state.vocab.reduce((s, v) => s + v.deIt.wrong + v.itDe.wrong, 0);
   const totalAnswers = correct + wrong;
   const accuracy = totalAnswers ? Math.round((correct / totalAnswers) * 100) : 0;
 
@@ -465,9 +497,8 @@ function renderSettings() {
   document.getElementById("reset-btn").addEventListener("click", () => {
     if (confirm("Alle Vokabeln zurück in Box 1? (Vokabeln bleiben erhalten, nur Lernfortschritt wird zurückgesetzt)")) {
       state.vocab.forEach(v => {
-        v.box = 1;
-        v.nextDue = todayISO();
-        v.stats = { correct: 0, wrong: 0 };
+        v.deIt = { box: 1, nextDue: todayISO(), correct: 0, wrong: 0 };
+        v.itDe = { box: 1, nextDue: todayISO(), correct: 0, wrong: 0 };
       });
       saveState();
       currentCard = null;
@@ -517,10 +548,9 @@ async function syncFromObsidian() {
           id: "v-" + Date.now() + "-" + Math.random().toString(36).slice(2, 7),
           de: v.de,
           it: v.it,
-          box: 1,
-          nextDue: todayISO(),
-          created: todayISO(),
-          stats: { correct: 0, wrong: 0 }
+          deIt: { box: 1, nextDue: todayISO(), correct: 0, wrong: 0 },
+          itDe: { box: 1, nextDue: todayISO(), correct: 0, wrong: 0 },
+          created: todayISO()
         });
         added++;
       }
@@ -537,9 +567,9 @@ async function syncFromObsidian() {
 // CSV Export / Import
 // ============================================================
 function exportCSV() {
-  const header = "deutsch;italienisch;box;richtig;falsch\n";
+  const header = "deutsch;italienisch;box_de_it;box_it_de;richtig_de_it;falsch_de_it;richtig_it_de;falsch_it_de\n";
   const rows = state.vocab.map(v =>
-    [csvEsc(v.de), csvEsc(v.it), v.box, v.stats.correct, v.stats.wrong].join(";")
+    [csvEsc(v.de), csvEsc(v.it), v.deIt.box, v.itDe.box, v.deIt.correct, v.deIt.wrong, v.itDe.correct, v.itDe.wrong].join(";")
   ).join("\n");
   const csv = header + rows;
   const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
