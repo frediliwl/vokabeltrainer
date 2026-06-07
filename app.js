@@ -24,7 +24,8 @@ const SAMPLE_VOCAB = [
 // --- State ---
 let state = loadState();
 let currentCard = null;
-let currentMode = state.mode || "de-it"; // "de-it" oder "it-de"
+let currentMode = state.mode || "mix"; // "de-it", "it-de" oder "mix"
+let currentCardDirection = null; // für mix-Modus: aktuelle Richtung der Karte
 let answered = false;
 
 // ============================================================
@@ -82,12 +83,27 @@ function addDays(iso, days) {
   return d.toISOString().split("T")[0];
 }
 function isDue(card) {
+  if (currentMode === "mix") {
+    return card.deIt.nextDue <= todayISO() || card.itDe.nextDue <= todayISO();
+  }
   const track = currentMode === "de-it" ? card.deIt : card.itDe;
   return track.nextDue <= todayISO();
 }
 
 function getTrack(card) {
+  if (currentMode === "mix") {
+    return currentCardDirection === "it-de" ? card.itDe : card.deIt;
+  }
   return currentMode === "de-it" ? card.deIt : card.itDe;
+}
+
+// Bestimmt die Richtung für eine Karte im Mix-Modus
+function pickDirection(card) {
+  const deItDue = card.deIt.nextDue <= todayISO();
+  const itDeDue = card.itDe.nextDue <= todayISO();
+  if (deItDue && itDeDue) return Math.random() < 0.5 ? "de-it" : "it-de";
+  if (deItDue) return "de-it";
+  return "it-de";
 }
 
 // ============================================================
@@ -141,6 +157,15 @@ function pickNextCard() {
   return due[0];
 }
 
+// Wählt nächste Karte + setzt im Mix-Modus die Richtung
+function advanceToNextCard() {
+  currentCard = pickNextCard();
+  answered = false;
+  if (currentCard && currentMode === "mix") {
+    currentCardDirection = pickDirection(currentCard);
+  }
+}
+
 // ============================================================
 // Views
 // ============================================================
@@ -149,8 +174,12 @@ function renderTrain() {
   const due = state.vocab.filter(isDue).length;
   const total = state.vocab.length;
 
-  // Stats-Boxen
-  const counts = [1, 2, 3, 4, 5].map(b => state.vocab.filter(v => getTrack(v).box === b).length);
+  // Stats-Boxen (im Mix: niedrigste Box beider Tracks)
+  const getBoxForStats = (v) => {
+    if (currentMode === "mix") return Math.min(v.deIt.box, v.itDe.box);
+    return getTrack(v).box;
+  };
+  const counts = [1, 2, 3, 4, 5].map(b => state.vocab.filter(v => getBoxForStats(v) === b).length);
   const dueCount = state.vocab.filter(isDue).length;
 
   let html = '<div class="stats">';
@@ -163,6 +192,7 @@ function renderTrain() {
   // Modus-Umschalter
   html += '<div class="mode-toggle">';
   html += `<button data-mode="de-it" class="${currentMode==="de-it"?"active":""}">🇩🇪 → 🇮🇹</button>`;
+  html += `<button data-mode="mix" class="${currentMode==="mix"?"active":""}">Mix</button>`;
   html += `<button data-mode="it-de" class="${currentMode==="it-de"?"active":""}">🇮🇹 → 🇩🇪</button>`;
   html += "</div>";
 
@@ -182,11 +212,11 @@ function renderTrain() {
 
   // Karte
   if (!currentCard || !isDue(currentCard) || !state.vocab.find(v => v.id === currentCard.id)) {
-    currentCard = pickNextCard();
-    answered = false;
+    advanceToNextCard();
   }
 
-  const promptIsDE = currentMode === "de-it";
+  const effectiveMode = currentMode === "mix" ? currentCardDirection : currentMode;
+  const promptIsDE = effectiveMode === "de-it";
   const promptWord = promptIsDE ? currentCard.de : currentCard.it;
   const expectedWord = promptIsDE ? currentCard.it : currentCard.de;
   const promptLabel = promptIsDE ? "Deutsch" : "Italienisch";
@@ -219,8 +249,7 @@ function renderTrain() {
     document.getElementById("show-btn").addEventListener("click", () => showSolution(expectedWord));
   } else if (answered) {
     document.getElementById("next-btn").addEventListener("click", () => {
-      currentCard = pickNextCard();
-      answered = false;
+      advanceToNextCard();
       renderTrain();
     });
   }
@@ -255,8 +284,7 @@ function checkAnswer(expected) {
   nextBtn.id = "next-btn";
   nextBtn.textContent = "Weiter";
   nextBtn.addEventListener("click", () => {
-    currentCard = pickNextCard();
-    answered = false;
+    advanceToNextCard();
     renderTrain();
   });
   document.querySelector("main").appendChild(nextBtn);
@@ -283,8 +311,7 @@ function showSolution(expected) {
   nextBtn.id = "next-btn";
   nextBtn.textContent = "Weiter";
   nextBtn.addEventListener("click", () => {
-    currentCard = pickNextCard();
-    answered = false;
+    advanceToNextCard();
     renderTrain();
   });
   document.querySelector("main").appendChild(nextBtn);
@@ -298,6 +325,7 @@ function bindModeButtons() {
       state.mode = currentMode;
       saveState();
       currentCard = null;
+      currentCardDirection = null;
       answered = false;
       renderTrain();
     });
