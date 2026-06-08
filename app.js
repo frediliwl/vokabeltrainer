@@ -287,7 +287,7 @@ function checkAnswer(expected) {
     advanceToNextCard();
     renderTrain();
   });
-  document.querySelector("main").appendChild(nextBtn);
+  document.getElementById("view-train").appendChild(nextBtn);
   setTimeout(() => nextBtn.focus(), 50);
 }
 
@@ -314,7 +314,7 @@ function showSolution(expected) {
     advanceToNextCard();
     renderTrain();
   });
-  document.querySelector("main").appendChild(nextBtn);
+  document.getElementById("view-train").appendChild(nextBtn);
   setTimeout(() => nextBtn.focus(), 50);
 }
 

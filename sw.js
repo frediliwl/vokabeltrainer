@@ -1,5 +1,5 @@
 // Service Worker für Offline-Fähigkeit
-const CACHE_NAME = 'vokabeltrainer-v4';
+const CACHE_NAME = 'vokabeltrainer-v5';
 const ASSETS = ['./', './index.html', './app.js', './manifest.json'];
 
 self.addEventListener('install', e => {
